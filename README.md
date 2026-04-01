@@ -7,13 +7,26 @@ File-based encryption for sensitive directories via [gocryptfs](https://github.c
 
 Encrypted ciphertext is stored in a hidden directory; plaintext is mounted via FUSE. The passphrase is stored in GNOME Keyring for automatic unlock.
 
-## Install
+## Installation
+
+### AUR
 
 ```bash
-make man
-sudo make install
+yay -S keys-vault
 ```
 
+### [gitpkg](https://gitlab.com/fkzys/gitpkg)
+```bash
+gitpkg install keys-vault
+```
+
+### Manual
+
+```bash
+git clone https://gitlab.com/fkzys/keys-vault.git
+cd keys-vault
+sudo make install
+```
 ## Configuration
 
 Configuration is read from (in order, later values override earlier):
