@@ -1,0 +1,112 @@
+# keys-vault
+
+File-based encryption for sensitive directories via [gocryptfs](https://github.com/rfjakob/gocryptfs) + GNOME Keyring.
+
+Encrypted ciphertext is stored in a hidden directory; plaintext is mounted via FUSE. The passphrase is stored in GNOME Keyring for automatic unlock.
+
+## Install
+
+```bash
+make man
+sudo make install
+```
+
+## Configuration
+
+Configuration is read from (in order, later values override earlier):
+
+1. `/etc/keys-vault.conf` — system-wide defaults
+2. `$XDG_CONFIG_HOME/keys-vault.conf` (default: `~/.config/keys-vault.conf`) — per-user overrides
+3. CLI flags (`--dir`, `--cipher-dir`)
+
+### Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `PLAIN_DIR` | `~/keys` | Plaintext mount point |
+| `CIPHER_DIR` | Derived from `PLAIN_DIR` | Encrypted ciphertext directory |
+
+`CIPHER_DIR` is derived as a hidden directory with `.enc` suffix in the same parent: `~/keys` → `~/.keys.enc`, `~/secure/vault` → `~/secure/.vault.enc`.
+
+## Usage
+
+```bash
+keys-vault init       # create vault (random or user-supplied passphrase)
+keys-vault open       # mount
+keys-vault status     # open / locked / stale / not initialized
+keys-vault close      # unmount
+keys-vault passwd     # rotate passphrase
+```
+
+### Custom directory
+
+```bash
+# Via flag
+keys-vault --dir=~/secure/credentials init
+
+# Via config
+echo 'PLAIN_DIR="${HOME}/secure/credentials"' > ~/.config/keys-vault.conf
+keys-vault init
+```
+
+## Commands
+
+| Command | Description |
+|---|---|
+| `init` | Create encrypted volume, store passphrase in keyring |
+| `open` | Mount vault; recovers stale mounts; no-op if already mounted or not initialized |
+| `close` | Unmount vault; handles stale mounts; no-op if not mounted |
+| `status` | Print state: `open` / `locked` / `stale` / `not initialized` |
+| `passwd` | Rotate gocryptfs passphrase and update keyring |
+
+## Options
+
+| Option | Description |
+|---|---|
+| `--dir=PATH` | Plaintext mount point (default: `~/keys`) |
+| `--cipher-dir=PATH` | Encrypted ciphertext directory (default: derived from `--dir`) |
+| `-h`, `--help` | Show usage |
+| `--version` | Show version |
+
+## Systemd integration
+
+A user service is included for automatic mount on login:
+
+```bash
+systemctl --user enable --now keys-vault.service
+```
+
+The service mounts on start (`After=gnome-keyring-daemon.service`) and unmounts on stop.
+
+Custom directories configured via `~/.config/keys-vault.conf` are picked up by the service automatically. For per-flag overrides, create a service drop-in:
+
+```bash
+systemctl --user edit keys-vault.service
+```
+
+```ini
+[Service]
+ExecStart=
+ExecStart=/usr/bin/keys-vault --dir=%h/secure/credentials open
+ExecStop=
+ExecStop=/usr/bin/keys-vault --dir=%h/secure/credentials close
+```
+
+## Stale mount recovery
+
+If the gocryptfs process dies (e.g. OOM kill) the FUSE mountpoint becomes stale — it appears in `/proc/mounts` but `stat` fails with "Transport endpoint is not connected".
+
+- **`open`** detects this and force-unmounts before re-mounting
+- **`close`** detects stale mounts and force-unmounts them
+- **`status`** reports `stale` as a distinct state
+
+## Dependencies
+
+- [gocryptfs](https://github.com/rfjakob/gocryptfs)
+- `secret-tool` (libsecret)
+- `fusermount` (fuse2 or fuse3)
+- GNOME Keyring (or any Secret Service provider)
+
+## License
+
+AGPL-3.0-or-later
