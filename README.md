@@ -1,5 +1,8 @@
 # keys-vault
 
+[![CI](https://github.com/rpPH4kQocMjkm2Ve/keys-vault/actions/workflows/ci.yml/badge.svg)](https://github.com/rpPH4kQocMjkm2Ve/keys-vault/actions/workflows/ci.yml)
+![License](https://img.shields.io/github/license/rpPH4kQocMjkm2Ve/keys-vault)
+
 File-based encryption for sensitive directories via [gocryptfs](https://github.com/rfjakob/gocryptfs) + GNOME Keyring.
 
 Encrypted ciphertext is stored in a hidden directory; plaintext is mounted via FUSE. The passphrase is stored in GNOME Keyring for automatic unlock.
