@@ -5,6 +5,8 @@
 
 File-based encryption for sensitive directories via [gocryptfs](https://github.com/rfjakob/gocryptfs) + GNOME Keyring.
 
+**Implemented in x86_64 assembly** — pure Linux syscalls, no libc dependency.
+
 Encrypted ciphertext is stored in a hidden directory; plaintext is mounted via FUSE. The passphrase is stored in GNOME Keyring for automatic unlock.
 
 ## Installation
@@ -27,6 +29,25 @@ git clone https://gitlab.com/fkzys/keys-vault.git
 cd keys-vault
 sudo make install
 ```
+
+### Building from Source
+
+Requires `nasm` assembler and `ld` linker:
+
+```bash
+# Install dependencies
+sudo apt install nasm binutils  # Debian/Ubuntu
+sudo dnf install nasm binutils  # Fedora
+
+# Build
+make build
+
+# The binary is at bin/keys-vault
+./bin/keys-vault --version
+```
+
+The entire project is written in x86_64 assembly (`src/keys-vault.asm`) using direct Linux syscalls — no C library required.
+
 ## Configuration
 
 Configuration is read from (in order, later values override earlier):

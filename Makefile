@@ -1,4 +1,4 @@
-.PHONY: install uninstall reinstall install-conf man clean test
+.PHONY: install uninstall reinstall install-conf man clean test build keys-vault
 
 PREFIX     = /usr
 SYSCONFDIR = /etc
@@ -13,7 +13,22 @@ BASH_COMPDIR = $(SHAREDIR)/bash-completion/completions
 UNITDIR      = $(PREFIX)/lib/systemd/user
 LICENSEDIR   = $(SHAREDIR)/licenses/$(pkgname)
 
+ASMC         = nasm
+ASM          = ld
+SRC_DIR      = src
+BIN_DIR      = bin
+
 MANPAGES = man/keys-vault.1
+
+# Build assembly source
+build: keys-vault
+
+keys-vault: $(SRC_DIR)/keys-vault.asm
+	@mkdir -p $(BIN_DIR)
+	$(ASMC) -f elf64 -o $(BIN_DIR)/keys-vault.o $(SRC_DIR)/keys-vault.asm
+	$(ASM) -o keys-vault $(BIN_DIR)/keys-vault.o
+	@rm -f $(BIN_DIR)/keys-vault.o
+	@echo "Built keys-vault (x86_64 assembly)"
 
 man: $(MANPAGES)
 
@@ -21,7 +36,7 @@ man/%.1: man/%.1.md
 	pandoc -s -t man -o $@ $<
 
 clean:
-	rm -f $(MANPAGES)
+	rm -f $(MANPAGES) $(BIN_DIR)/keys-vault.o
 
 UNIT_TESTS = \
 	tests/test_config.sh \
@@ -35,8 +50,8 @@ test:
 		bash "$$t" || exit 1; \
 	done
 
-install:
-	install -Dm755 bin/keys-vault $(DESTDIR)$(BINDIR)/keys-vault
+install: build
+	install -Dm755 $(BIN_DIR)/keys-vault $(DESTDIR)$(BINDIR)/keys-vault
 
 	install -Dm644 systemd/user/keys-vault.service \
 		$(DESTDIR)$(UNITDIR)/keys-vault.service
