@@ -227,17 +227,37 @@ assert_contains "not initialized error" "not initialized" "$_out"
 
 section "open: successful mount"
 
-# cmd_open calls kr_lookup (pipe+fork+exec) then gocryptfs mount.
-# The kr_lookup path has known stack issues in the assembly, so we
-# skip this test until the assembly is fixed.
-ok "open: mount (skipped — kr_lookup stack bug in assembly)"
+new_test_home
+_cipher="${_home}/.keys.enc"
+mkdir -p "$_cipher"
+touch "${_cipher}/gocryptfs.conf"
+set_unmounted
+_plain="${_home}/keys"
+run_vault_home "$_home" open
+assert_eq "open → exit 0" "0" "$_rc"
+if [[ -f "${MOCK_STATE}/mounted" ]]; then
+    ok "mount state created"
+else
+    fail "mount state not created"
+fi
 
 
 section "open: keyring lookup fails"
 
-# cmd_open calls kr_lookup which forks to run secret-tool.
-# Known stack bug in kr_lookup path.
-ok "open: keyring fail (skipped — kr_lookup stack bug in assembly)"
+new_test_home
+_cipher="${_home}/.keys.enc"
+mkdir -p "$_cipher"
+touch "${_cipher}/gocryptfs.conf"
+set_unmounted
+_rc=0
+_out=$(env PATH="${MOCK_BIN}:${ORIG_PATH}" \
+           HOME="$_home" \
+           XDG_CONFIG_HOME="${TESTDIR}/no_config" \
+           MOCK_STATE_DIR="$MOCK_STATE" \
+           MOCK_SECRET_FAIL=1 \
+           "$VAULT" open 2>&1) || _rc=$?
+assert_eq "keyring fail → exit 1" "1" "$_rc"
+assert_contains "keyring error" "keyring lookup failed" "$_out"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -279,9 +299,13 @@ assert_contains "passwd not initialized error" "not initialized" "$_out"
 
 section "passwd: successful rotation"
 
-# cmd_passwd calls choose_pass (which reads stdin) then kr_store (pipe+fork+exec).
-# The kr_store path has known stack issues in the assembly.
-ok "passwd: rotation (skipped — kr_store stack bug in assembly)"
+new_test_home
+_cipher="${_home}/.keys.enc"
+mkdir -p "$_cipher"
+touch "${_cipher}/gocryptfs.conf"
+run_vault_input "1" "$_home" passwd
+assert_eq "passwd rotation → exit 0" "0" "$_rc"
+assert_contains "passwd shows rotated" "Passphrase rotated" "$_out"
 
 
 # ═══════════════════════════════════════════════════════════════

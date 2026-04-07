@@ -147,6 +147,8 @@ section .data
     
     ; Config
     conf_sys        db  "/etc/keys-vault.conf", 0
+    conf_filename   db  "/keys-vault.conf", 0
+    dot_config      db  "/.config", 0
     key_plain       db  "PLAIN_DIR=", 0
     key_cipher      db  "CIPHER_DIR=", 0
     key_plain_noeq  db  "PLAIN_DIR", 0
@@ -184,6 +186,7 @@ section .bss
     conf_cipher     resb MAX_PATH
     arg_plain       resb MAX_PATH
     arg_cipher      resb MAX_PATH
+    user_conf_path  resb MAX_PATH
     
     ; Buffers
     buf_read        resb BUF_SIZE
@@ -577,6 +580,7 @@ resolve_all_bins:
 run_with_stdin:
     push rbp
     mov rbp, rsp
+    push rbx
     push rdi
     push rsi
     push rdx
@@ -584,22 +588,21 @@ run_with_stdin:
     push r13
     push r14
     push r15
-    
+
     ; Save parameters
     mov r12, rdi   ; argv
     mov r13, rsi   ; data
     mov r14, rdx   ; len
-    
+
     ; Create pipe
     lea rdi, [rel pipe_fds]
     mov rax, SYS_PIPE
     syscall
     cmp rax, 0
     jl .rw_fail
-    
+
     mov r15d, [rel pipe_fds]       ; pipe[0] read
-    lea rdi, [rel pipe_fds]
-    mov ebx, [rdi+4]      ; pipe[1] write
+    mov ebx, [rel pipe_fds+4]      ; pipe[1] write
     
     ; Fork
     mov rax, SYS_FORK
@@ -607,27 +610,27 @@ run_with_stdin:
     test rax, rax
     js .rw_fail
     jz .rw_child
-    
+
     ; Parent
-    mov r14, rax  ; child pid
-    
+    mov r10d, eax   ; child PID (r10 not clobbered by syscall)
+
     ; Close read end
     mov rdi, r15
     call sys_close
-    
+
     ; Write data
     mov rdi, rbx
     mov rsi, r13
-    mov rdx, r14
+    mov rdx, r14        ; len
     mov rax, SYS_WRITE
     syscall
-    
+
     ; Close write end
     mov rdi, rbx
     call sys_close
-    
+
     ; Wait for child
-    mov rdi, r14
+    mov rdi, r10
     lea rsi, [rel wait_st]
     xor rdx, rdx
     xor r10, r10
@@ -674,6 +677,7 @@ run_with_stdin:
     pop rdx
     pop rsi
     pop rdi
+    pop rbx
     pop rbp
     ret
 
@@ -843,70 +847,66 @@ is_stale:
 
 ; recover_stale: rdi=mountpoint
 recover_stale:
-    push rdi
-    push rsi
-    push rcx
-    push rdx
-    push r8
-    push r9
-    
+    push rbp
+    mov rbp, rsp
+    push r12
+    mov r12, rdi       ; save mountpoint in callee-saved register
+
     call is_stale
     test rax, rax
     jz .rec_done
-    
+
     ; Print recovery message
     lea rdi, [rel msg_recover]
     call print_str_stderr
-    mov rdi, rdi  ; already in rdi
+    mov rdi, r12       ; restore mountpoint
     call print_str_stderr
     lea rdi, [rel nl]
     call print_str_stderr
-    
+
     ; Try fusermount -u, then -uz
     lea r8, [rel exec_argv]
     lea r9, [rel bin_fusermount]
     mov [r8], r9
     lea r9, [rel fm_u]
     mov [r8+8], r9
-    mov [r8+16], rdi
+    mov [r8+16], r12   ; mountpoint
     mov qword [r8+24], 0
-    
+
     mov rdi, r8
     call run_simple
     test rax, rax
     jz .rec_done
-    
+
     ; Try -uz
     lea r9, [rel fm_uz]
     mov [r8+8], r9
     call run_simple
-    
+
 .rec_done:
-    pop r9
-    pop r8
-    pop rdx
-    pop rcx
-    pop rsi
-    pop rdi
+    pop r12
+    pop rbp
     ret
 
 ; build_kr_attr: rdi=mountpoint → stores in kr_attr
 build_kr_attr:
-    push rdi
-    push rsi
-    
-    lea rsi, [rel kr_attr_pfx]
+    push rbp
+    mov rbp, rsp
+    push r12
+    mov r12, rdi       ; save mountpoint in callee-saved register
+
     lea rdi, [rel kr_attr]
+    lea rsi, [rel kr_attr_pfx]
     call my_strcpy
-    
+
     call my_strlen
     lea rdi, [rel kr_attr]
     add rdi, rax
-    ; rsi still has mountpoint
+    mov rsi, r12       ; restore mountpoint
     call my_strcpy
-    
-    pop rsi
-    pop rdi
+
+    pop r12
+    pop rbp
     ret
 
 ; kr_store: rdi=passphrase, rsi=mountpoint
@@ -992,24 +992,22 @@ kr_store:
 kr_lookup:
     push rbp
     mov rbp, rsp
+    push rbx
     push rdi
     push rsi
-    push rcx
     push rdx
     push r8
     push r9
     push r10
-    push r11
     push r12
     push r13
     push r14
-    
+
     mov r12, rdi  ; mountpoint
-    
+
     ; Build attribute
-    mov rdi, rdi
     call build_kr_attr
-    
+
     ; Build argv
     lea r8, [rel exec_argv]
     lea r9, [rel bin_secret]
@@ -1021,17 +1019,16 @@ kr_lookup:
     lea r9, [rel kr_attr]
     mov [r8+24], r9
     mov qword [r8+32], 0
-    
+
     ; Create pipe to capture stdout
     lea rdi, [rel pipe_fds]
     mov rax, SYS_PIPE
     syscall
     cmp rax, 0
     jl .kl_fail
-    
+
     mov r13d, [rel pipe_fds]      ; read
-    lea rdi, [rel pipe_fds]
-    mov ebx, [rdi+4]     ; write
+    mov ebx, [rel pipe_fds+4]     ; write
     
     ; Fork
     mov rax, SYS_FORK
@@ -1107,13 +1104,13 @@ kr_lookup:
     pop r14
     pop r13
     pop r12
-    pop r11
     pop r10
     pop r9
+    pop r8
     pop rdx
-    pop rcx
     pop rsi
     pop rdi
+    pop rbx
     pop rbp
     ret
 
@@ -1878,27 +1875,26 @@ load_config:
     jmp .lc_find_eol
 
 .lc_process_line:
-    ; Copy line to buf_line
+    ; Copy line to buf_line and null-terminate
     mov rcx, r10
     sub rcx, r9
     lea rdi, [rel buf_line]
     lea rsi, [rel buf_read]
     add rsi, r9
-    
+    cld
+    rep movsb             ; copy line bytes
+    mov byte [rdi], 0     ; null-terminate
+
     ; Check if line starts with PLAIN_DIR= or CIPHER_DIR=
-    push rcx
     lea rdi, [rel buf_line]
     lea rsi, [rel key_plain]
     call my_strcmp
-    pop rcx
     test rax, rax
     je .lc_found_plain
-    
-    push rcx
+
     lea rdi, [rel buf_line]
     lea rsi, [rel key_cipher]
     call my_strcmp
-    pop rcx
     test rax, rax
     je .lc_found_cipher
     
@@ -2010,28 +2006,25 @@ cmd_passwd:
     inc r10  ; r10 = old_len + 1
 
     ; Copy new pass after old_pass\n
-    lea rsi, [rel buf_read]
-    add rsi, r10
-    mov rdi, rsi
-    mov rsi, r13
+    lea rdi, [rel buf_read]
+    add rdi, r10          ; destination = buf_read + old_len + 1
+    mov rsi, r13          ; source = new passphrase
     call my_strcpy
 
-    ; Add newline after new pass
-    mov rdi, rsi
-    call my_strlen
-    mov byte [rsi+rax], 10
-    inc rax
+    ; Add newline after new pass in buf_read
+    call my_strlen        ; rax = new_len, rdi = buf_read + old_len + 1
+    mov byte [rdi+rax], 10   ; write newline at end of new pass in buf_read
 
     ; Total stdin length: old_len + 1 + new_len + 1
+    push rax              ; save new_len
     mov rdi, r12
-    call my_strlen
+    call my_strlen        ; rax = old_len
     mov r11, rax
-    add r11, 1  ; + newline
-    mov rdi, r13
-    call my_strlen
-    add r11, rax
-    add r11, 1  ; + newline
-    mov r10, r11  ; total stdin length
+    add r11, 1            ; + newline after old
+    pop rax               ; restore new_len
+    add r11, rax          ; + new_len
+    add r11, 1            ; + final newline
+    mov r10, r11          ; total stdin length
 
     ; Run gocryptfs -passwd -q -- cipher_dir
     lea r8, [rel exec_argv]
@@ -2094,34 +2087,70 @@ cmd_passwd:
 finalize_dirs:
     push rbp
     mov rbp, rsp
-    push rdi
     push rsi
-    push rdx
 
-    ; Copy home_dir to final_plain
+    ; ═══════════════════════════════════════════
+    ; PLAIN DIRECTORY: CLI > config > default
+    ; ═══════════════════════════════════════════
+
+    ; Check CLI arg (--dir)
+    lea rdi, [rel arg_plain]
+    call my_strlen
+    test rax, rax
+    jnz .fd_cli_plain
+
+    ; Check config value
+    lea rdi, [rel conf_plain]
+    call my_strlen
+    test rax, rax
+    jnz .fd_conf_plain
+
+    ; Default: home_dir + "/keys"
     lea rsi, [rel home_dir]
     lea rdi, [rel final_plain]
     call my_strcpy
-    
-    ; Append "/keys"
-    lea rdi, [rel final_plain]
     call my_strlen
     lea rdi, [rel final_plain]
     add rdi, rax
-    lea rsi, [rel default_plain]  ; "/keys"
+    lea rsi, [rel default_plain]
     call my_strcpy
-    
-    ; Build cipher dir: home_dir + "/.keys.enc"
+    jmp .fd_cipher
+
+.fd_cli_plain:
+    lea rsi, [rel arg_plain]
+    lea rdi, [rel final_plain]
+    call my_strcpy
+    jmp .fd_cipher
+
+.fd_conf_plain:
+    lea rsi, [rel conf_plain]
+    lea rdi, [rel final_plain]
+    call my_strcpy
+
+    ; ═══════════════════════════════════════════
+    ; CIPHER DIRECTORY: CLI > config > default
+    ; ═══════════════════════════════════════════
+
+.fd_cipher:
+    ; Check CLI arg (--cipher-dir)
+    lea rdi, [rel arg_cipher]
+    call my_strlen
+    test rax, rax
+    jnz .fd_cli_cipher
+
+    ; Check config value
+    lea rdi, [rel conf_cipher]
+    call my_strlen
+    test rax, rax
+    jnz .fd_conf_cipher
+
+    ; Default: home_dir + "/.keys.enc"
     lea rsi, [rel home_dir]
     lea rdi, [rel final_cipher]
     call my_strcpy
-    
-    ; Append "/.keys.enc"
-    lea rdi, [rel final_cipher]
     call my_strlen
     lea rdi, [rel final_cipher]
     add rdi, rax
-    ; Manually write "/.keys.enc"
     mov byte [rdi], '/'
     mov byte [rdi+1], '.'
     mov byte [rdi+2], 'k'
@@ -2133,10 +2162,21 @@ finalize_dirs:
     mov byte [rdi+8], 'n'
     mov byte [rdi+9], 'c'
     mov byte [rdi+10], 0
+    jmp .fd_done
 
-    pop rdx
+.fd_cli_cipher:
+    lea rsi, [rel arg_cipher]
+    lea rdi, [rel final_cipher]
+    call my_strcpy
+    jmp .fd_done
+
+.fd_conf_cipher:
+    lea rsi, [rel conf_cipher]
+    lea rdi, [rel final_cipher]
+    call my_strcpy
+
+.fd_done:
     pop rsi
-    pop rdi
     pop rbp
     ret
 
@@ -2190,6 +2230,88 @@ get_home_dir:
     pop rcx
     pop rsi
     pop rdi
+    pop rbp
+    ret
+
+; ──────────────────────────────────────────────────────────
+; USER CONFIG LOADING
+; ──────────────────────────────────────────────────────────
+
+; load_user_config: builds user config path and loads it
+; Uses $XDG_CONFIG_HOME/keys-vault.conf or $HOME/.config/keys-vault.conf
+load_user_config:
+    push rbp
+    mov rbp, rsp
+    push rsi
+    push r8
+    push r9
+    push r10
+
+    ; Search envp for XDG_CONFIG_HOME=
+    mov r8, [rel envp_global]
+.luc_find:
+    mov rsi, [r8]
+    test rsi, rsi
+    jz .luc_default
+    cmp dword [rsi], 'XDG_'
+    jne .luc_next
+    cmp word [rsi+4], 'CO'
+    jne .luc_next
+    cmp dword [rsi+6], 'NFIG'
+    jne .luc_next
+    cmp word [rsi+10], '_H'
+    jne .luc_next
+    cmp word [rsi+12], 'OM'
+    jne .luc_next
+    cmp byte [rsi+14], 'E'
+    jne .luc_next
+    cmp byte [rsi+15], '='
+    jne .luc_next
+    add rsi, 16
+    jmp .luc_xdg_found
+
+.luc_next:
+    add r8, 8
+    jmp .luc_find
+
+.luc_xdg_found:
+    ; Copy XDG_CONFIG_HOME to user_conf_path
+    lea rdi, [rel user_conf_path]
+    call my_strcpy
+    ; Append "/keys-vault.conf"
+    call my_strlen
+    lea rdi, [rel user_conf_path]
+    add rdi, rax
+    lea rsi, [rel conf_filename]
+    call my_strcpy
+    jmp .luc_load
+
+.luc_default:
+    ; Default: HOME + "/.config/keys-vault.conf"
+    lea rdi, [rel user_conf_path]
+    lea rsi, [rel home_dir]
+    call my_strcpy
+    call my_strlen
+    lea rdi, [rel user_conf_path]
+    add rdi, rax
+    lea rsi, [rel dot_config]
+    call my_strcpy
+    call my_strlen
+    lea rdi, [rel user_conf_path]
+    add rdi, rax
+    lea rsi, [rel conf_filename]
+    call my_strcpy
+
+.luc_load:
+    ; Load the user config file
+    lea rdi, [rel user_conf_path]
+    call load_config
+
+.luc_done:
+    pop r10
+    pop r9
+    pop r8
+    pop rsi
     pop rbp
     ret
 
@@ -2253,7 +2375,10 @@ _start:
     ; Load system config
     lea rdi, [rel conf_sys]
     call load_config
-    
+
+    ; Load user config (overrides system)
+    call load_user_config
+
     ; Parse CLI arguments
     mov rcx, r11        ; Restore argc
     mov r12, rsp        ; argv pointer
