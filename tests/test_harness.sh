@@ -9,7 +9,7 @@
 #   - run_cmd / assert_rc helpers
 #   - Temporary TESTDIR with EXIT cleanup
 #   - MOCK_BIN on PATH with make_mock utility
-#   - Sources bin/keys-vault with _KEYS_VAULT_NO_MAIN=1
+#   - VAULT binary path (compiled ELF)
 
 set -uo pipefail
 
@@ -17,7 +17,7 @@ PASS=0
 FAIL=0
 TESTS=0
 
-# ── Test helpers ─────────────────────────────────────────────
+# ── Assertion helpers ──────────────────────────────────────
 
 ok() {
     PASS=$((PASS + 1))
@@ -67,9 +67,21 @@ assert_not_contains() {
     fi
 }
 
+# ── Command execution helpers ──────────────────────────────
+
+# run_cmd: captures stdout+stderr in _out, exit code in _rc
 run_cmd() {
     _rc=0
     _out=$("$@" 2>&1) || _rc=$?
+}
+
+# run_cmd_sep: captures stdout in _out, stderr in _err, exit code in _rc
+run_cmd_sep() {
+    _rc=0
+    _err=$(mktemp)
+    _out=$("$@" 2>"$_err") || _rc=$?
+    _err_content=$(cat "$_err")
+    rm -f "$_err"
 }
 
 assert_rc() {
@@ -80,12 +92,14 @@ assert_rc() {
     assert_eq "$desc" "$expected" "$rc"
 }
 
+# ── Section helper ─────────────────────────────────────────
+
 section() {
     echo ""
     echo "── $1 ──"
 }
 
-# ── Setup test environment ───────────────────────────────────
+# ── Setup test environment ─────────────────────────────────
 
 TESTDIR=$(mktemp -d)
 trap 'rm -rf "$TESTDIR"' EXIT
@@ -95,6 +109,8 @@ mkdir -p "$MOCK_BIN"
 
 ORIG_PATH="$PATH"
 
+# make_mock: create a mock binary on MOCK_BIN
+# Usage: make_mock name "body"
 make_mock() {
     local name="$1"; shift
     local body="${*:-exit 0}"
@@ -107,20 +123,55 @@ ENDSCRIPT
 
 export PATH="${MOCK_BIN}:${PATH}"
 
-# ── Source keys-vault ────────────────────────────────────────
+# ── Vault binary path ──────────────────────────────────────
 
 _HARNESS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$_HARNESS_DIR/.." && pwd)"
+VAULT="${PROJECT_ROOT}/keys-vault"
 
-_KEYS_VAULT_NO_MAIN=1
+# ── Helper: run vault with mocks and optional env overrides ─
+# Usage: run_vault [--env KEY=VAL ...] [-- stdin_text] args...
+# Sets _out (combined stdout+stderr) and _rc.
+run_vault() {
+    local stdin_text=""
+    local -a extra_env=()
+    local -a args=()
 
-# shellcheck source=../bin/keys-vault
-source "${PROJECT_ROOT}/bin/keys-vault"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --env)
+                shift
+                extra_env+=("$1")
+                shift
+                ;;
+            --)
+                shift
+                stdin_text="$1"
+                shift
+                ;;
+            *)
+                args+=("$1")
+                shift
+                ;;
+        esac
+    done
 
-# Undo set -e from sourced script; keep -u and pipefail
-set +e
+    _rc=0
+    local env_cmd=(env "PATH=${MOCK_BIN}:${ORIG_PATH}" "XDG_CONFIG_HOME=${TESTDIR}/no_config")
 
-# ── Summary function ─────────────────────────────────────────
+    # Apply extra env vars
+    for ev in "${extra_env[@]+"${extra_env[@]}"}"; do
+        env_cmd+=("$ev")
+    done
+
+    if [[ -n "$stdin_text" ]]; then
+        _out=$(printf '%s\n' "$stdin_text" | "${env_cmd[@]}" "$VAULT" "${args[@]}" 2>&1) || _rc=$?
+    else
+        _out=$("${env_cmd[@]}" "$VAULT" "${args[@]}" 2>&1) || _rc=$?
+    fi
+}
+
+# ── Summary function ───────────────────────────────────────
 
 summary() {
     local name="${0##*/}"

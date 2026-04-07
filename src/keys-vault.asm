@@ -44,12 +44,16 @@ section .data
     err_prefix      db  "keys-vault: ", 0
     nl              db  10, 0
     
-    ; External binaries
-    bin_gocryptfs   db  "/usr/bin/gocryptfs", 0
-    bin_secret      db  "/usr/bin/secret-tool", 0  
-    bin_fusermount  db  "/usr/bin/fusermount", 0
-    bin_mkdir       db  "/usr/bin/mkdir", 0
-    bin_rm          db  "/usr/bin/rm", 0
+    ; External binaries (names only — resolved via PATH at startup)
+    bin_gocryptfs_n   db  "gocryptfs", 0
+    bin_secret_n      db  "secret-tool", 0
+    bin_fusermount_n  db  "fusermount", 0
+    bin_mkdir_n       db  "mkdir", 0
+    bin_rm_n          db  "rm", 0
+    bin_mountpoint_n  db  "mountpoint", 0
+
+    ; Fallback prefix for binary resolution
+    usr_bin_prefix    db  "/usr/bin/", 0
     
     ; gocryptfs args
     gfs_init        db  "-init", 0
@@ -157,11 +161,18 @@ section .data
     cmd_status_s    db  "status", 0
     cmd_passwd_s    db  "passwd", 0
     
-    ; Mountpoint binary check
-    bin_mountpoint  db  "/usr/bin/mountpoint", 0
+    ; Mountpoint binary check (name only, resolved at startup)
     mp_q            db  "-q", 0
 
 section .bss
+    ; Resolved binary paths (filled at startup by resolve_bins)
+    bin_gocryptfs     resb MAX_PATH
+    bin_secret        resb MAX_PATH
+    bin_fusermount    resb MAX_PATH
+    bin_mkdir         resb MAX_PATH
+    bin_rm            resb MAX_PATH
+    bin_mountpoint    resb MAX_PATH
+
     ; Global state
     home_dir        resb MAX_PATH
     final_plain     resb MAX_PATH
@@ -373,6 +384,192 @@ die:
     call sys_exit
 
 ; ──────────────────────────────────────────────────────────
+; BINARY RESOLUTION (PATH search)
+; ──────────────────────────────────────────────────────────
+
+; resolve_bin: rdi=bin_name, rsi=dest_buf (MAX_PATH)
+; Searches PATH for bin_name. On success, copies full path to dest_buf.
+; Returns rax=1 if found, 0 if not.
+resolve_bin:
+    push rbp
+    mov rbp, rsp
+    push rdi
+    push rsi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+
+    mov r12, rdi   ; bin name (preserve)
+    mov r13, rsi   ; dest buffer (preserve)
+    xor r14, r14   ; found flag
+
+    ; Get PATH from envp_global
+    mov r8, [rel envp_global]
+    test r8, r8
+    jz .rb_fallback
+
+.rb_find_path:
+    mov rsi, [r8]
+    test rsi, rsi
+    jz .rb_fallback
+    cmp dword [rsi], 'PATH'    ; "PATH" in env string
+    jne .rb_next_env
+    cmp byte [rsi+4], '='
+    jne .rb_next_env
+    add rsi, 5                 ; skip "PATH="
+    jmp .rb_search
+
+.rb_next_env:
+    add r8, 8
+    jmp .rb_find_path
+
+.rb_search:
+    mov r9, rsi    ; component start
+
+.rb_find_sep:
+    mov al, [rsi]
+    test al, al
+    jz .rb_try_comp
+    cmp al, ':'
+    je .rb_try_comp
+    inc rsi
+    jmp .rb_find_sep
+
+.rb_try_comp:
+    mov r10, rsi
+    sub r10, r9            ; r10 = component length
+    test r10, r10
+    jz .rb_next_comp       ; empty component (:: or leading/trailing :), skip
+
+    ; Build path: component + "/" + bin_name in dest buffer
+    push rsi               ; save PATH position
+    push r9                ; save component start
+    push r10               ; save component length
+
+    ; Copy component
+    lea rdi, [r13]
+    mov rsi, r9
+    mov rcx, r10
+    cld
+    rep movsb
+
+    ; Append "/" + bin_name
+    lea rdi, [r13]
+    add rdi, r10
+    mov byte [rdi], '/'
+    inc rdi
+    mov rsi, r12
+
+.rb_copy_name:
+    mov al, [rsi]
+    mov [rdi], al
+    test al, al
+    jz .rb_check_stat
+    inc rdi
+    inc rsi
+    jmp .rb_copy_name
+
+.rb_check_stat:
+    mov rdi, r13
+    lea rsi, [rel statbuf]
+    mov rax, SYS_STAT
+    syscall
+    test rax, rax
+    jz .rb_found        ; File exists!
+
+    ; Not found, continue
+    pop r10
+    pop r9
+    pop rsi
+    mov al, [rsi]
+    test al, al
+    jz .rb_fallback     ; end of PATH
+    inc rsi             ; skip ':'
+    jmp .rb_search
+
+.rb_found:
+    pop r10
+    pop r9
+    pop rsi
+    mov r14, 1
+    jmp .rb_done
+
+.rb_search_done:
+    pop r10
+    pop r9
+    pop rsi
+    ; Fall through to rb_next_comp
+
+.rb_next_comp:
+    mov al, [rsi]
+    test al, al
+    jz .rb_fallback     ; end of PATH
+    inc rsi             ; skip ':'
+    jmp .rb_search
+
+.rb_fallback:
+    ; Fallback: /usr/bin/<name>
+    lea rdi, [r13]
+    lea rsi, [rel usr_bin_prefix]
+    call my_strcpy
+    call my_strlen
+    lea rdi, [r13]
+    add rdi, rax
+    mov rsi, r12
+    call my_strcpy
+    mov r14, 1
+
+.rb_done:
+    mov rax, r14
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rsi
+    pop rdi
+    pop rbp
+    ret
+
+; resolve_all_bins: called once at startup
+resolve_all_bins:
+    push rbp
+    mov rbp, rsp
+
+    lea rdi, [rel bin_gocryptfs_n]
+    lea rsi, [rel bin_gocryptfs]
+    call resolve_bin
+
+    lea rdi, [rel bin_secret_n]
+    lea rsi, [rel bin_secret]
+    call resolve_bin
+
+    lea rdi, [rel bin_fusermount_n]
+    lea rsi, [rel bin_fusermount]
+    call resolve_bin
+
+    lea rdi, [rel bin_mkdir_n]
+    lea rsi, [rel bin_mkdir]
+    call resolve_bin
+
+    lea rdi, [rel bin_rm_n]
+    lea rsi, [rel bin_rm]
+    call resolve_bin
+
+    lea rdi, [rel bin_mountpoint_n]
+    lea rsi, [rel bin_mountpoint]
+    call resolve_bin
+
+    pop rbp
+    ret
+
+; ──────────────────────────────────────────────────────────
 ; PROCESS EXECUTION
 ; ──────────────────────────────────────────────────────────
 
@@ -454,17 +651,18 @@ run_with_stdin:
     
     mov rdi, r15
     call sys_close
-    
+
     ; Exec
-    mov rdi, r12
-    lea rsi, [rel envp_global]
+    mov rdi, [r12]              ; filename = argv[0] (path string)
+    mov rsi, r12                ; argv array
+    mov rdx, [rel envp_global]  ; envp
     mov rax, SYS_EXECVE
     syscall
-    
+
     ; If exec fails
     mov rdi, EXIT_FAILURE
     call sys_exit
-    
+
 .rw_fail:
     mov rax, EXIT_FAILURE
     
@@ -509,8 +707,9 @@ run_simple:
     
 .rs_child:
     ; Child: exec
-    mov rdi, r12
-    lea rsi, [rel envp_global]
+    mov rdi, [r12]              ; filename = argv[0] (path string)
+    mov rsi, r12                ; argv array
+    mov rdx, [rel envp_global]  ; envp
     mov rax, SYS_EXECVE
     syscall
     mov rdi, EXIT_FAILURE
@@ -534,11 +733,12 @@ is_initialized:
     push rsi
     push rdx
     push rcx
-    
-    ; Build path: cipher_dir + "/gocryptfs.conf"
-    lea rsi, [rel buf_read]
+
+    ; Build path: buf_read = cipher_dir + "/gocryptfs.conf"
+    mov rsi, rdi             ; source = cipher_dir
+    lea rdi, [rel buf_read]  ; destination = buf_read
     call my_strcpy
-    
+
     call my_strlen
     lea rdi, [rel buf_read]
     add rdi, rax
@@ -566,101 +766,55 @@ is_initialized:
     pop rdi
     ret
 
-; is_mounted: rdi=mountpoint → rax=1 if mounted
+; is_mounted: rdi=mountpoint_path → rax=1 if mounted, 0 otherwise
+; Uses mountpoint -q binary (mockable for testing)
 is_mounted:
+    push rbp
+    mov rbp, rsp
     push rdi
     push rsi
-    push rcx
-    push rdx
     push r8
     push r9
     push r10
     push r11
     push r12
-    
-    ; Open /proc/mounts
-    lea rdi, [rel proc_mounts]
-    xor rsi, rsi
-    xor rdx, rdx
-    mov rax, SYS_OPEN
-    syscall
+    push r13
+    push r14
+
+    mov r12, rdi   ; save mountpoint path
+
+    ; Build argv: [mountpoint, "-q", mountpoint_path, NULL]
+    lea r8, [rel exec_argv]
+    lea r9, [rel bin_mountpoint]  ; resolved path
+    mov [r8], r9
+    lea r9, [rel mp_q]
+    mov [r8+8], r9
+    mov [r8+16], r12
+    mov qword [r8+24], 0
+
+    ; Run mountpoint -q path (exit 0 = mounted, exit 1 = not)
+    mov rdi, r8
+    call run_simple
     test rax, rax
-    js .not_mounted
-    
-    mov r12, rax  ; fd
-    
-    ; Read file
-    mov rdi, r12
-    lea rsi, [rel buf_mounts]
-    mov rdx, BUF_SIZE
-    mov rax, SYS_READ
-    syscall
-    
-    mov r9, rax   ; bytes read
-    mov rdi, r12
-    call sys_close
-    
-    ; Search for mountpoint in buffer
-    ; Look for " {mountpoint} " pattern
-    lea r8, [rel buf_mounts]
-    xor r10, r10  ; offset
-    
-.mount_search:
-    cmp r10, r9
-    jge .not_mounted
-    
-    ; Check if character matches start of mountpoint
-    push rdi
-    push rsi
-    push rcx
-    lea rdi, [rel final_plain]
-    lea rsi, [r8+r10]
-    call my_strcmp
-    pop rcx
-    pop rsi
-    pop rdi
-    test rax, rax
-    je .found_mount
-    
-    inc r10
-    jmp .mount_search
-    
-.found_mount:
-    ; Check preceding char is space
-    test r10, r10
-    jz .not_mounted
-    mov al, [r8+r10-1]
-    cmp al, ' '
-    jne .not_mounted
-    
-    ; Check following char is space or newline
-    push rdi
-    call my_strlen
-    pop rdi
-    add r10, rax
-    mov al, [r8+r10]
-    cmp al, ' '
-    je .is_mounted_yes
-    cmp al, 10
-    je .is_mounted_yes
-    
-.not_mounted:
+    jz .im_yes
+
     xor rax, rax
-    jmp .mount_done
-    
-.is_mounted_yes:
+    jmp .im_done
+
+.im_yes:
     mov rax, 1
-    
-.mount_done:
+
+.im_done:
+    pop r14
+    pop r13
     pop r12
     pop r11
     pop r10
     pop r9
     pop r8
-    pop rdx
-    pop rcx
     pop rsi
     pop rdi
+    pop rbp
     ret
 
 ; is_stale: rdi=mountpoint → rax=1 if stale mount
@@ -937,9 +1091,10 @@ kr_lookup:
     
     mov rdi, rbx
     call sys_close
-    
-    mov rdi, r8
-    lea rsi, [rel envp_global]
+
+    mov rdi, [r8]               ; filename = argv[0] (path string)
+    mov rsi, r8                 ; argv array
+    mov rdx, [rel envp_global]  ; envp
     mov rax, SYS_EXECVE
     syscall
     mov rdi, EXIT_FAILURE
@@ -1025,47 +1180,50 @@ read_pass:
 
 ; read_line_stdin: rdi=buf, rsi=max → rax=len
 read_line_stdin:
+    push rbp
+    mov rbp, rsp
     push rdi
     push rsi
-    push rcx
     push rdx
-    push r8
-    
-    xor rcx, rcx  ; count
-    
+    push r12          ; counter (r12 is NOT clobbered by syscall)
+    push r15
+
+    mov r15, rdi      ; save buffer pointer
+    xor r12, r12      ; counter
+
 .rl_loop:
-    cmp rcx, rsi
+    cmp r12, rsi
     jge .rl_done
-    
-    ; Read 1 byte
+
+    ; Read 1 byte directly into caller's buffer
     mov rdi, STDIN
-    lea r8, [rel buf_read]
+    lea rsi, [r15+r12]  ; buffer + offset
     mov rdx, 1
     mov rax, SYS_READ
     syscall
-    
+
     test rax, rax
     jz .rl_done
-    
-    mov al, [rel buf_read]
+
+    mov al, [r15+r12]
     cmp al, 10
     je .rl_done
     cmp al, 0
     je .rl_done
-    
-    mov [rdi+rcx], al
-    inc rcx
+
+    inc r12
     jmp .rl_loop
-    
+
 .rl_done:
-    mov byte [rdi+rcx], 0
-    mov rax, rcx
-    
-    pop r8
+    mov byte [r15+r12], 0
+    mov rax, r12
+
+    pop r15
+    pop r12
     pop rdx
-    pop rcx
     pop rsi
     pop rdi
+    pop rbp
     ret
 
 ; generate_pass: generates random passphrase → rax=ptr
@@ -1258,7 +1416,7 @@ choose_pass:
     ; Read 1 char
     mov rdi, STDIN
     lea rsi, [rel buf_read]
-    mov rdx, 2
+    mov rdx, 1
     mov rax, SYS_READ
     syscall
     
@@ -1280,16 +1438,19 @@ choose_pass:
     mov rdx, 1
     mov rax, SYS_READ
     syscall
-    
+
     call generate_pass
-    
+    mov r14, rax   ; save passphrase pointer (print_str_stderr clobbers rax)
+
     ; Print it
     lea rdi, [rel msg_gen_hdr]
     call print_str_stderr
-    mov rdi, rax
+    mov rdi, r14
     call print_str_stderr
     lea rdi, [rel msg_gen_ftr]
     call print_str_stderr
+
+    mov rax, r14   ; restore return value
     jmp .cp_done
     
 .cp_manual:
@@ -1412,6 +1573,7 @@ cmd_init:
     pop r11
     pop r10
     pop r9
+    pop r8
     pop rdx
     pop rcx
     pop rsi
@@ -1525,6 +1687,7 @@ cmd_open:
     pop r11
     pop r10
     pop r9
+    pop r8
     pop rdx
     pop rcx
     pop rsi
@@ -1919,6 +2082,7 @@ cmd_passwd:
     pop r11
     pop r10
     pop r9
+    pop r8
     pop rdx
     pop rcx
     pop rsi
@@ -1999,7 +2163,7 @@ get_home_dir:
     jz .ghd_fallback_ghd
     
     ; Check if starts with "HOME="
-    cmp dword [rsi], 'EMOH'  ; "HOME" in little-endian
+    cmp dword [rsi], 'HOME'  ; "HOME" in little-endian
     jne .ghd_next_ghd
     cmp byte [rsi+4], '='
     je .ghd_found_ghd
@@ -2048,13 +2212,14 @@ _start:
     add rsp, rcx
     pop rax             ; Skip NULL
     mov r13, rsp        ; r13 = envp
-    
+    mov [rel envp_global], r13  ; Save envp for execve and PATH resolution
+
     ; Find HOME in envp
 .find_home_start:
     mov rsi, [r13]
     test rsi, rsi
     jz .no_home
-    cmp dword [rsi], 'EMOH'
+    cmp dword [rsi], 'HOME'
     jne .next_env
     cmp byte [rsi+4], '='
     je .found_home
@@ -2081,7 +2246,10 @@ _start:
 .got_home:
     ; Restore stack
     mov rsp, r12
-    
+
+    ; Resolve all external binaries via PATH search
+    call resolve_all_bins
+
     ; Load system config
     lea rdi, [rel conf_sys]
     call load_config

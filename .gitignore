@@ -1,3 +1,2 @@
 keys-vault
-bin/keys-vault
-bin/keys-vault.o
+*.o

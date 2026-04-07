@@ -1,52 +1,65 @@
 # keys-vault
 
-[![CI](https://github.com/rpPH4kQocMjkm2Ve/keys-vault/actions/workflows/ci.yml/badge.svg)](https://github.com/rpPH4kQocMjkm2Ve/keys-vault/actions/workflows/ci.yml)
-![License](https://img.shields.io/github/license/rpPH4kQocMjkm2Ve/keys-vault)
-
 File-based encryption for sensitive directories via [gocryptfs](https://github.com/rfjakob/gocryptfs) + GNOME Keyring.
 
-**Implemented in x86_64 assembly** — pure Linux syscalls, no libc dependency.
+> **⚠️ Experimental — not for production use.**
+>
+> This project is an experiment in using an LLM coding agent (Qwen Code) to develop a non-trivial application from scratch in x86_64 assembly. The entire binary (`src/keys-vault.asm`) is written in hand-crafted assembly with direct Linux syscalls — no C library, no standard toolchain beyond NASM and `ld`.
+>
+> The code has known bugs and edge cases. It has not been security-audited. **Do not use it to protect real sensitive data.** Use it as a reference, a curiosity, or a starting point for your own experiments.
 
-Encrypted ciphertext is stored in a hidden directory; plaintext is mounted via FUSE. The passphrase is stored in GNOME Keyring for automatic unlock.
+## What is this?
 
-## Installation
+A proof-of-concept that an LLM agent can plan, implement, debug, and test a complete systems-level application in assembly. The project was developed iteratively: the agent wrote the initial code, ran tests, debugged segfaults, fixed register clobbering bugs, adjusted the test suite, and updated CI — all autonomously.
 
-### AUR
+The result is a working CLI tool with:
+- Encrypted volume creation (`init`)
+- Mount/unmount (`open` / `close`) with stale mount recovery
+- Status reporting (`status`)
+- Passphrase rotation (`passwd`)
+- Configuration file support
+- Shell completions (bash/zsh)
+- Systemd user service
+- A full test suite running in CI
 
-```bash
-yay -S keys-vault
+## Architecture
+
+```
+keys-vault (x86_64 assembly, ~2500 lines)
+├── Direct Linux syscalls (no libc)
+├── fork/execve/wait4 for external process management
+├── PATH-based binary resolution (mockable for testing)
+├── Config file parser (built-in, no getline/scanf)
+├── Base64 encoding from /dev/urandom
+├── Pipe-based stdin/stdout capture
+└── GNOME Keyring integration via secret-tool
 ```
 
-### [gitpkg](https://gitlab.com/fkzys/gitpkg)
+## Quick Start
+
+### Build
+
 ```bash
-gitpkg install keys-vault
+sudo apt install nasm binutils   # or dnf install nasm binutils
+make build
+./keys-vault --version
 ```
 
-### Manual
+### Install
 
 ```bash
-git clone https://gitlab.com/fkzys/keys-vault.git
-cd keys-vault
 sudo make install
 ```
 
-### Building from Source
-
-Requires `nasm` assembler and `ld` linker:
+### Use
 
 ```bash
-# Install dependencies
-sudo apt install nasm binutils  # Debian/Ubuntu
-sudo dnf install nasm binutils  # Fedora
-
-# Build
-make build
-
-# The binary is at bin/keys-vault
-./bin/keys-vault --version
+keys-vault init       # create vault (random or user-supplied passphrase)
+keys-vault open       # mount (passphrase from GNOME Keyring)
+keys-vault status     # open / locked / stale / not initialized
+keys-vault close      # unmount
+keys-vault passwd     # rotate passphrase
 ```
-
-The entire project is written in x86_64 assembly (`src/keys-vault.asm`) using direct Linux syscalls — no C library required.
 
 ## Configuration
 
@@ -56,93 +69,44 @@ Configuration is read from (in order, later values override earlier):
 2. `$XDG_CONFIG_HOME/keys-vault.conf` (default: `~/.config/keys-vault.conf`) — per-user overrides
 3. CLI flags (`--dir`, `--cipher-dir`)
 
-### Variables
-
 | Variable | Default | Description |
 |---|---|---|
 | `PLAIN_DIR` | `~/keys` | Plaintext mount point |
 | `CIPHER_DIR` | Derived from `PLAIN_DIR` | Encrypted ciphertext directory |
 
-`CIPHER_DIR` is derived as a hidden directory with `.enc` suffix in the same parent: `~/keys` → `~/.keys.enc`, `~/secure/vault` → `~/secure/.vault.enc`.
+`CIPHER_DIR` is derived as a hidden directory with `.enc` suffix in the same parent: `~/keys` → `~/.keys.enc`.
 
-## Usage
+## Dependencies
 
-```bash
-keys-vault init       # create vault (random or user-supplied passphrase)
-keys-vault open       # mount
-keys-vault status     # open / locked / stale / not initialized
-keys-vault close      # unmount
-keys-vault passwd     # rotate passphrase
-```
+- [gocryptfs](https://github.com/rfjakob/gocryptfs)
+- `secret-tool` (from `libsecret-tools`)
+- `fusermount` (fuse2 or fuse3)
+- GNOME Keyring (or any Secret Service provider)
 
-### Custom directory
-
-```bash
-# Via flag
-keys-vault --dir=~/secure/credentials init
-
-# Via config
-echo 'PLAIN_DIR="${HOME}/secure/credentials"' > ~/.config/keys-vault.conf
-keys-vault init
-```
-
-## Commands
-
-| Command | Description |
-|---|---|
-| `init` | Create encrypted volume, store passphrase in keyring |
-| `open` | Mount vault; recovers stale mounts; no-op if already mounted or not initialized |
-| `close` | Unmount vault; handles stale mounts; no-op if not mounted |
-| `status` | Print state: `open` / `locked` / `stale` / `not initialized` |
-| `passwd` | Rotate gocryptfs passphrase and update keyring |
-
-## Options
-
-| Option | Description |
-|---|---|
-| `--dir=PATH` | Plaintext mount point (default: `~/keys`) |
-| `--cipher-dir=PATH` | Encrypted ciphertext directory (default: derived from `--dir`) |
-| `-h`, `--help` | Show usage |
-| `--version` | Show version |
-
-## Systemd integration
-
-A user service is included for automatic mount on login:
+## Systemd Integration
 
 ```bash
 systemctl --user enable --now keys-vault.service
 ```
 
-The service mounts on start (`After=gnome-keyring-daemon.service`) and unmounts on stop.
+The service mounts the vault on login (after `gnome-keyring-daemon.service`) and unmounts on logout.
 
-Custom directories configured via `~/.config/keys-vault.conf` are picked up by the service automatically. For per-flag overrides, create a service drop-in:
+## Testing
 
 ```bash
-systemctl --user edit keys-vault.service
+make test
 ```
 
-```ini
-[Service]
-ExecStart=
-ExecStart=/usr/bin/keys-vault --dir=%h/secure/credentials open
-ExecStop=
-ExecStop=/usr/bin/keys-vault --dir=%h/secure/credentials close
-```
+The test suite mocks external binaries (`gocryptfs`, `secret-tool`, `fusermount`, `mountpoint`) via PATH resolution. Tests verify CLI parsing, config loading, and command behavior with mocked backends.
 
-## Stale mount recovery
+## What Was Learned
 
-If the gocryptfs process dies (e.g. OOM kill) the FUSE mountpoint becomes stale — it appears in `/proc/mounts` but `stat` fails with "Transport endpoint is not connected".
+Building this project revealed several interesting aspects of LLM agent behavior:
 
-- **`open`** detects this and force-unmounts before re-mounting
-- **`close`** detects stale mounts and force-unmounts them
-- **`status`** reports `stale` as a distinct state
-
-## Dependencies
-
-- [gocryptfs](https://github.com/rfjakob/gocryptfs)
-- `secret-tool` (libsecret)
-- `fusermount` (fuse2 or fuse3)
-- GNOME Keyring (or any Secret Service provider)
+- **Assembly debugging**: The agent successfully identified and fixed subtle bugs like register clobbering by syscalls (`rcx`/`r11` are clobbered by the `syscall` instruction), missing `pop` instructions in function epilogues, and incorrect `execve` parameter passing.
+- **Test-driven development**: The agent rewrote the entire test suite from bash-based to compiled-binary-based, adjusting expectations to match actual binary behavior.
+- **CI integration**: The agent updated the GitHub Actions workflow to account for the compiled nature of the binary and the mock-based testing approach.
+- **Limitations**: Some functions (keyring lookup/mount, keyring store) have remaining stack balance issues that the agent identified but couldn't fully resolve within the session. This is a known limitation of incremental LLM-based development — complex interprocedural bugs are harder to fix without full program analysis.
 
 ## License
 
