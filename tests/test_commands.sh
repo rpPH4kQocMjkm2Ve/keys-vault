@@ -2,55 +2,17 @@
 # tests/test_commands.sh — Command behavior with mocked external tools
 # Run: bash tests/test_commands.sh
 
-set -uo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/test_harness.sh"
 
-PASS=0
-FAIL=0
-TESTS=0
-
-ok()   { PASS=$((PASS+1)); TESTS=$((TESTS+1)); echo "  ✓ $1"; }
-fail() { FAIL=$((FAIL+1)); TESTS=$((TESTS+1)); echo "  ✗ $1"; }
-
-assert_eq() {
-    local desc="$1" expected="$2" actual="$3"
-    [[ "$expected" == "$actual" ]] \
-        && ok "$desc" || fail "$desc (expected='$expected', got='$actual')"
-}
-
-assert_contains() {
-    local desc="$1" needle="$2" haystack="$3"
-    [[ "$haystack" == *"$needle"* ]] \
-        && ok "$desc" || fail "$desc (needle='$needle' not in output)"
-}
-
-assert_not_contains() {
-    local desc="$1" needle="$2" haystack="$3"
-    [[ "$haystack" != *"$needle"* ]] \
-        && ok "$desc" || fail "$desc (needle='$needle' unexpectedly found)"
-}
-
-section() { echo ""; echo "── $1 ──"; }
+VAULT="${PROJECT_ROOT}/bin/keys-vault"
 
 # ── Setup ─────────────────────────────────────────────────────
 
-TESTDIR=$(mktemp -d)
-trap 'rm -rf "$TESTDIR"' EXIT
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-VAULT="${PROJECT_ROOT}/bin/keys-vault"
-
-MOCK_BIN="${TESTDIR}/mock_bin"
 MOCK_STATE="${TESTDIR}/mock_state"
-mkdir -p "$MOCK_BIN" "$MOCK_STATE" "${TESTDIR}/no_config"
-
-ORIG_PATH="$PATH"
-
-# ── Mock commands ─────────────────────────────────────────────
+mkdir -p "$MOCK_STATE" "${TESTDIR}/no_config"
 
 # gocryptfs: on -init create gocryptfs.conf, always consume stdin
-cat > "${MOCK_BIN}/gocryptfs" <<'MOCK'
-#!/bin/bash
+make_mock_in "${MOCK_BIN}" gocryptfs '
 cat > /dev/null 2>/dev/null
 _dir="" _init=0 _sep=0
 for _a in "$@"; do
@@ -62,39 +24,27 @@ if [[ $_init -eq 1 && -n "$_dir" ]]; then
     mkdir -p "$_dir"
     touch "${_dir}/gocryptfs.conf"
 fi
-exit 0
-MOCK
-chmod +x "${MOCK_BIN}/gocryptfs"
+exit 0'
 
 # secret-tool: store consumes stdin, lookup returns passphrase
-cat > "${MOCK_BIN}/secret-tool" <<'MOCK'
-#!/bin/bash
+make_mock_in "${MOCK_BIN}" secret-tool '
 case "$1" in
     store)  cat > /dev/null ;;
     lookup) echo "mock-passphrase" ;;
 esac
-exit 0
-MOCK
-chmod +x "${MOCK_BIN}/secret-tool"
+exit 0'
 
 # timeout: transparent pass-through
-cat > "${MOCK_BIN}/timeout" <<'MOCK'
-#!/bin/bash
+make_mock_in "${MOCK_BIN}" timeout '
 shift
-exec "$@"
-MOCK
-chmod +x "${MOCK_BIN}/timeout"
+exec "$@"'
 
 # fusermount: always succeed
-printf '#!/bin/bash\nexit 0\n' > "${MOCK_BIN}/fusermount"
-chmod +x "${MOCK_BIN}/fusermount"
+make_mock_in "${MOCK_BIN}" fusermount 'exit 0'
 
 # mountpoint: controlled by state file
-cat > "${MOCK_BIN}/mountpoint" <<MOCK
-#!/bin/bash
-if [[ -f '${MOCK_STATE}/mounted' ]]; then exit 0; else exit 1; fi
-MOCK
-chmod +x "${MOCK_BIN}/mountpoint"
+make_mock_in "${MOCK_BIN}" mountpoint "
+if [[ -f '${MOCK_STATE}/mounted' ]]; then exit 0; else exit 1; fi"
 
 # ── Helpers ───────────────────────────────────────────────────
 
@@ -103,21 +53,19 @@ set_unmounted() { rm -f "${MOCK_STATE}/mounted"; }
 
 # Run vault with mocks, no user config, custom test dir
 run_vault() {
-    local rc=0
+    _rc=0
     _out=$(env PATH="${MOCK_BIN}:${ORIG_PATH}" \
                XDG_CONFIG_HOME="${TESTDIR}/no_config" \
-               bash "$VAULT" "$@" 2>&1) || rc=$?
-    _rc=$rc
+               bash "$VAULT" "$@" 2>&1) || _rc=$?
 }
 
 # Run vault with stdin input
 run_vault_input() {
     local input="$1"; shift
-    local rc=0
+    _rc=0
     _out=$(printf '%s' "$input" | env PATH="${MOCK_BIN}:${ORIG_PATH}" \
                                       XDG_CONFIG_HOME="${TESTDIR}/no_config" \
-                                      bash "$VAULT" "$@" 2>&1) || rc=$?
-    _rc=$rc
+                                      bash "$VAULT" "$@" 2>&1) || _rc=$?
 }
 
 # Fresh test dirs for each test group
@@ -261,29 +209,23 @@ touch "${_cipher}/gocryptfs.conf"
 set_unmounted
 
 # Override secret-tool to fail on lookup
-cat > "${MOCK_BIN}/secret-tool" <<'MOCK'
-#!/bin/bash
+make_mock_in "${MOCK_BIN}" secret-tool '
 case "$1" in
     store)  cat > /dev/null ;;
     lookup) exit 1 ;;
-esac
-MOCK
-chmod +x "${MOCK_BIN}/secret-tool"
+esac'
 
 run_vault --dir="$_plain" --cipher-dir="$_cipher" open
 assert_eq "keyring fail → exit 1" "1" "$_rc"
 assert_contains "keyring error" "keyring lookup failed" "$_out"
 
 # Restore mock
-cat > "${MOCK_BIN}/secret-tool" <<'MOCK'
-#!/bin/bash
+make_mock_in "${MOCK_BIN}" secret-tool '
 case "$1" in
     store)  cat > /dev/null ;;
     lookup) echo "mock-passphrase" ;;
 esac
-exit 0
-MOCK
-chmod +x "${MOCK_BIN}/secret-tool"
+exit 0'
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -328,13 +270,4 @@ assert_eq "passwd → exit 0" "0" "$_rc"
 assert_contains "passwd rotated" "rotated" "$_out"
 
 
-# ═══════════════════════════════════════════════════════════════
-#  RESULTS
-# ═══════════════════════════════════════════════════════════════
-
-echo ""
-echo "════════════════════════════════════"
-echo " ${0##*/}: $PASS passed, $FAIL failed (total: $TESTS)"
-echo "════════════════════════════════════"
-[[ $FAIL -ne 0 ]] && exit 1
-exit 0
+summary

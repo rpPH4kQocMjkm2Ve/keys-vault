@@ -2,53 +2,17 @@
 # tests/test_cli.sh — CLI argument parsing
 # Run: bash tests/test_cli.sh
 
-set -uo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/test_harness.sh"
 
-PASS=0
-FAIL=0
-TESTS=0
-
-ok()   { PASS=$((PASS+1)); TESTS=$((TESTS+1)); echo "  ✓ $1"; }
-fail() { FAIL=$((FAIL+1)); TESTS=$((TESTS+1)); echo "  ✗ $1"; }
-
-assert_eq() {
-    local desc="$1" expected="$2" actual="$3"
-    [[ "$expected" == "$actual" ]] \
-        && ok "$desc" || fail "$desc (expected='$expected', got='$actual')"
-}
-
-assert_contains() {
-    local desc="$1" needle="$2" haystack="$3"
-    [[ "$haystack" == *"$needle"* ]] \
-        && ok "$desc" || fail "$desc (needle='$needle' not in output)"
-}
-
-run_cmd() { _rc=0; _out=$("$@" 2>&1) || _rc=$?; }
-section() { echo ""; echo "── $1 ──"; }
-
-# ── Setup ─────────────────────────────────────────────────────
-
-TESTDIR=$(mktemp -d)
-trap 'rm -rf "$TESTDIR"' EXIT
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VAULT="${PROJECT_ROOT}/bin/keys-vault"
 
-MOCK_BIN="${TESTDIR}/mock_bin"
-mkdir -p "$MOCK_BIN" "${TESTDIR}/no_config"
-
+# Custom mocks for CLI testing — no call tracking needed
 for cmd in gocryptfs secret-tool fusermount timeout; do
-    printf '#!/bin/bash\ncat > /dev/null 2>/dev/null\nexit 0\n' > "${MOCK_BIN}/${cmd}"
-    chmod +x "${MOCK_BIN}/${cmd}"
+    make_mock "$cmd" 'cat > /dev/null 2>/dev/null; exit 0'
 done
+make_mock mountpoint 'exit 1'
 
-# mountpoint: default not mounted
-printf '#!/bin/bash\nexit 1\n' > "${MOCK_BIN}/mountpoint"
-chmod +x "${MOCK_BIN}/mountpoint"
-
-ORIG_PATH="$PATH"
-
+# Custom helper: run vault with mocks, no user config
 run_vault() {
     _rc=0
     _out=$(env PATH="${MOCK_BIN}:${ORIG_PATH}" \
@@ -57,6 +21,8 @@ run_vault() {
 }
 
 # ── Tests ─────────────────────────────────────────────────────
+
+mkdir -p "${TESTDIR}/no_config"
 
 section "--help"
 
@@ -165,11 +131,4 @@ assert_eq "flag overrides config → exit 0" "0" "$_rc"
 assert_contains "flag override works" "not initialized" "$_out"
 
 
-# ── Summary ───────────────────────────────────────────────────
-
-echo ""
-echo "════════════════════════════════════"
-echo " ${0##*/}: $PASS passed, $FAIL failed (total: $TESTS)"
-echo "════════════════════════════════════"
-[[ $FAIL -ne 0 ]] && exit 1
-exit 0
+summary
