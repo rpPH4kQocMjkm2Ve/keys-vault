@@ -2,7 +2,7 @@
 title: KEYS-VAULT
 section: 1
 header: User Commands
-footer: keys-vault 1.0.0
+footer: keys-vault
 ---
 
 # NAME
