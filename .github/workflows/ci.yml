@@ -23,4 +23,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - run: make test
+      - run: |
+          for t in tests/test_config.sh tests/test_cli.sh tests/test_commands.sh; do
+            echo "━━━ $$t ━━━"
+            bash "$$t" || exit 1
+          done
