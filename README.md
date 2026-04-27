@@ -1,8 +1,8 @@
 # keys-vault
 
-[![CI](https://github.com/rpPH4kQocMjkm2Ve/keys-vault/actions/workflows/ci.yml/badge.svg)](https://github.com/rpPH4kQocMjkm2Ve/keys-vault/actions/workflows/ci.yml)
-![License](https://img.shields.io/github/license/rpPH4kQocMjkm2Ve/keys-vault)
-[![Spec](https://img.shields.io/endpoint?url=https://gitlab.com/fkzys/specs/-/raw/main/version.json&maxAge=300)](https://gitlab.com/fkzys/specs)
+[![CI](https://github.com/fkzys/keys-vault/actions/workflows/ci.yml/badge.svg)](https://github.com/fkzys/keys-vault/actions/workflows/ci.yml)
+![License](https://img.shields.io/github/license/fkzys/keys-vault)
+[![Spec](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/fkzys/specs/refs/heads/main/version.json&maxAge=300)](https://github.com/fkzys/specs)
 
 File-based encryption for sensitive directories via [gocryptfs](https://github.com/rfjakob/gocryptfs) + GNOME Keyring.
 
@@ -16,7 +16,7 @@ Encrypted ciphertext is stored in a hidden directory; plaintext is mounted via F
 yay -S keys-vault
 ```
 
-### [gitpkg](https://gitlab.com/fkzys/gitpkg)
+### [gitpkg](https://github.com/fkzys/gitpkg)
 ```bash
 gitpkg install keys-vault
 ```
@@ -24,7 +24,7 @@ gitpkg install keys-vault
 ### Manual
 
 ```bash
-git clone https://gitlab.com/fkzys/keys-vault.git
+git clone https://github.com/fkzys/keys-vault.git
 cd keys-vault
 sudo make install
 ```
